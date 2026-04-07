@@ -29,6 +29,11 @@ BEGIN_MESSAGE_MAP(Cweek5View, CView)
 	ON_COMMAND(ID_FILE_PRINT_PREVIEW, &Cweek5View::OnFilePrintPreview)
 	ON_WM_CONTEXTMENU()
 	ON_WM_RBUTTONUP()
+	ON_WM_DESTROY()
+	ON_WM_LBUTTONDOWN()
+	ON_WM_LBUTTONUP()
+	ON_WM_RBUTTONDOWN()
+	ON_WM_MOUSEMOVE()
 END_MESSAGE_MAP()
 
 // Cweek5View 생성/소멸
@@ -61,6 +66,7 @@ void Cweek5View::OnDraw(CDC* /*pDC*/)
 		return;
 
 	// TODO: 여기에 원시 데이터에 대한 그리기 코드를 추가합니다.
+	dx12Renderer.Render();
 }
 
 
@@ -90,10 +96,12 @@ void Cweek5View::OnEndPrinting(CDC* /*pDC*/, CPrintInfo* /*pInfo*/)
 	// TODO: 인쇄 후 정리 작업을 추가합니다.
 }
 
-void Cweek5View::OnRButtonUp(UINT /* nFlags */, CPoint point)
+void Cweek5View::OnRButtonUp(UINT nFlags, CPoint point)
 {
 	ClientToScreen(&point);
 	OnContextMenu(this, point);
+	ReleaseCapture();
+	dx12Renderer.OnMouseUp(nFlags, point.x, point.y);
 }
 
 void Cweek5View::OnContextMenu(CWnd* /* pWnd */, CPoint point)
@@ -126,3 +134,40 @@ Cweek5Doc* Cweek5View::GetDocument() const // 디버그되지 않은 버전은 �
 
 
 // Cweek5View 메시지 처리기
+
+void Cweek5View::OnInitialUpdate()
+{
+	CView::OnInitialUpdate();
+
+	CRect rect;
+	GetClientRect(&rect);
+	dx12Renderer.Initialize(GetSafeHwnd(), rect.Width(), rect.Height());
+}
+
+void Cweek5View::OnDestroy()
+{
+	dx12Renderer.Cleanup();
+	CView::OnDestroy();
+}
+
+void Cweek5View::OnLButtonDown(UINT nFlags, CPoint point)
+{
+	SetCapture();
+	dx12Renderer.OnMouseDown(nFlags, point.x, point.y);
+}
+void Cweek5View::OnLButtonUp(UINT nFlags, CPoint point)
+{
+	ReleaseCapture();
+	dx12Renderer.OnMouseUp(nFlags, point.x, point.y);
+}
+void Cweek5View::OnRButtonDown(UINT nFlags, CPoint point)
+{
+	SetCapture();
+	dx12Renderer.OnMouseDown(nFlags, point.x, point.y);
+}
+
+void Cweek5View::OnMouseMove(UINT nFlags, CPoint point)
+{
+	dx12Renderer.OnMouseMove(nFlags, point.x, point.y);
+	Invalidate(FALSE); // 다음 프레임 렌더 요청
+}
