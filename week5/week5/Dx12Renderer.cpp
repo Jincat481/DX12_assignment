@@ -157,14 +157,16 @@ bool Dx12Renderer::BuildDepthStencil()
 
 bool Dx12Renderer::BuildConstantBuffers()
 {
-    const UINT cbSize = (sizeof(ObjectConstants) + 255) & ~255; // 256바이트 정렬
+    // 도형 3개분 공간 한번에 할당
+    cbElementSize = (sizeof(ObjectConstants) + 255) & ~255;
+    const UINT cbSize = cbElementSize * maxShapes;
 
     D3D12_HEAP_PROPERTIES heapProp = {};
     heapProp.Type = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bufDesc.Width = cbSize;
+    bufDesc.Width = cbSize;  // 3개분 크기
     bufDesc.Height = 1;
     bufDesc.DepthOrArraySize = 1;
     bufDesc.MipLevels = 1;
@@ -178,9 +180,10 @@ bool Dx12Renderer::BuildConstantBuffers()
     D3D12_RANGE readRange = { 0, 0 };
     constantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&cbMappedData));
 
+    // CBV는 슬롯 0번만 미리 생성 (나머지는 Draw 시 직접 주소 계산)
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
     cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress();
-    cbvDesc.SizeInBytes = cbSize;
+    cbvDesc.SizeInBytes = cbElementSize;
     device->CreateConstantBufferView(&cbvDesc,
         cbvHeap->GetCPUDescriptorHandleForHeapStart());
 
@@ -189,15 +192,10 @@ bool Dx12Renderer::BuildConstantBuffers()
 
 bool Dx12Renderer::BuildRootSignature()
 {
-    D3D12_DESCRIPTOR_RANGE cbvRange = {};
-    cbvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-    cbvRange.NumDescriptors = 1;
-    cbvRange.BaseShaderRegister = 0;
-
     D3D12_ROOT_PARAMETER rootParam = {};
-    rootParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rootParam.DescriptorTable.NumDescriptorRanges = 1;
-    rootParam.DescriptorTable.pDescriptorRanges = &cbvRange;
+    rootParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV; // ← 변경
+    rootParam.Descriptor.ShaderRegister = 0; // b0
+    rootParam.Descriptor.RegisterSpace = 0;
     rootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
@@ -206,11 +204,8 @@ bool Dx12Renderer::BuildRootSignature()
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> serialized, error;
-    HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc,
+    D3D12SerializeRootSignature(&rootSigDesc,
         D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &error);
-    if (error) OutputDebugStringA((char*)error->GetBufferPointer());
-    if (FAILED(hr)) return false;
-
     device->CreateRootSignature(0, serialized->GetBufferPointer(),
         serialized->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
     return true;
@@ -379,15 +374,8 @@ void Dx12Renderer::Update()
     XMVECTOR pos = XMVectorSet(x, y, z, 1.0f);
     XMVECTOR target = XMVectorZero();
     XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-
-    XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
-    XMMATRIX world = XMLoadFloat4x4(&worldMatrix);
-    XMMATRIX proj = XMLoadFloat4x4(&projMatrix);
-    XMMATRIX wvp = XMMatrixTranspose(world * view * proj);
-
-    ObjectConstants cb;
-    XMStoreFloat4x4(&cb.worldViewProj, wvp);
-    memcpy(cbMappedData, &cb, sizeof(ObjectConstants));
+    
+    XMStoreFloat4x4(&viewMatrix, XMMatrixLookAtLH(pos, target, up));
 }
 
 void Dx12Renderer::PopulateCommandList()
@@ -395,11 +383,8 @@ void Dx12Renderer::PopulateCommandList()
     commandAllocator->Reset();
     commandList->Reset(commandAllocator.Get(), pipelineState.Get());
 
-    ID3D12DescriptorHeap* heaps[] = { cbvHeap.Get() };
-    commandList->SetDescriptorHeaps(1, heaps);
     commandList->SetGraphicsRootSignature(rootSignature.Get());
-    commandList->SetGraphicsRootDescriptorTable(0,
-        cbvHeap->GetGPUDescriptorHandleForHeapStart());
+    cbvHeap->GetGPUDescriptorHandleForHeapStart();
 
     D3D12_VIEWPORT viewport = { 0, 0, (float)width, (float)height, 0.0f, 1.0f };
     D3D12_RECT scissorRect = { 0, 0, width, height };
@@ -427,10 +412,40 @@ void Dx12Renderer::PopulateCommandList()
     commandList->ClearDepthStencilView(dsvHandle,
         D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
-    commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); // 수정 시 그려지는 방식이 달라짐
     commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
     commandList->IASetIndexBuffer(&indexBufferView);
-    commandList->DrawIndexedInstanced(indexCount, 1, 0, 0, 0);
+
+    XMFLOAT3 positions[] =
+    {
+        {  0.0f, 0.0f, 0.0f },
+        { -3.0f, 0.0f, 0.0f },
+        {  3.0f, 0.0f, 0.0f },
+    };
+
+    XMMATRIX view = XMLoadFloat4x4(&viewMatrix);
+    XMMATRIX proj = XMLoadFloat4x4(&projMatrix);
+
+    for (int i = 0; i < shapeCount; i++)
+    {
+        XMMATRIX world = XMMatrixTranslation(
+            positions[i].x, positions[i].y, positions[i].z);
+        XMMATRIX wvp = XMMatrixTranspose(world * view * proj);
+
+        // 슬롯 i번 위치에 각각 기록
+        ObjectConstants cb;
+        XMStoreFloat4x4(&cb.worldViewProj, wvp);
+        memcpy((BYTE*)cbMappedData + (SIZE_T)i * cbElementSize,
+            &cb, sizeof(ObjectConstants));
+
+        // 슬롯 i번 GPU 주소를 루트 파라미터에 바인딩
+        D3D12_GPU_VIRTUAL_ADDRESS cbAddress =
+            constantBuffer->GetGPUVirtualAddress()
+            + (UINT64)i * cbElementSize;
+        commandList->SetGraphicsRootConstantBufferView(0, cbAddress);
+
+        commandList->DrawIndexedInstanced(indexCount, 1, 0, 0, 0);
+    }
 
     // RenderTarget → Present
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -481,6 +496,12 @@ void Dx12Renderer::OnMouseMove(int BtnState, int X, int Y)
     }
     mLastMousePos.x = X;
     mLastMousePos.y = Y;
+}
+
+void Dx12Renderer::AddShape()
+{
+    if (shapeCount >= maxShapes) return;
+    shapeCount++;
 }
 
 void Dx12Renderer::WaitForPreviousFrame()

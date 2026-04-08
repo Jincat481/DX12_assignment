@@ -30,6 +30,7 @@ public:
 	afx_msg void OnRButtonDown(UINT nFlags, CPoint point);
 	afx_msg void OnRButtonUp(UINT nFlags, CPoint point);
 	afx_msg void OnMouseMove(UINT nFlags, CPoint point);
+	afx_msg void OnBtnAddShape();
 protected:
 	virtual BOOL OnPreparePrinting(CPrintInfo* pInfo);
 	virtual void OnBeginPrinting(CDC* pDC, CPrintInfo* pInfo);
@@ -53,6 +54,7 @@ protected:
 
 private:
 	Dx12Renderer dx12Renderer;
+	CButton btnAddShape;
 };
 
 #ifndef _DEBUG  // week5View.cpp의 디버그 버전
