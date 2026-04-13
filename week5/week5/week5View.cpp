@@ -34,6 +34,7 @@ BEGIN_MESSAGE_MAP(Cweek5View, CView)
 	ON_WM_LBUTTONUP()
 	ON_WM_RBUTTONDOWN()
 	ON_WM_MOUSEMOVE()
+	ON_BN_CLICKED(IDC_BTN_ADD_SHAPE, &Cweek5View::OnBtnAddShape)
 END_MESSAGE_MAP()
 
 // Cweek5View 생성/소멸
@@ -142,6 +143,11 @@ void Cweek5View::OnInitialUpdate()
 	CRect rect;
 	GetClientRect(&rect);
 	dx12Renderer.Initialize(GetSafeHwnd(), rect.Width(), rect.Height());
+
+	// 버튼 생성
+	btnAddShape.Create(L"도형 추가", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		CRect(10, 10, 110, 40), // 위치(x, y, width, heigth) 
+		this, IDC_BTN_ADD_SHAPE);
 }
 
 void Cweek5View::OnDestroy()
@@ -170,4 +176,10 @@ void Cweek5View::OnMouseMove(UINT nFlags, CPoint point)
 {
 	dx12Renderer.OnMouseMove(nFlags, point.x, point.y);
 	Invalidate(FALSE); // 다음 프레임 렌더 요청
+}
+
+void Cweek5View::OnBtnAddShape() 
+{
+	dx12Renderer.AddShape();
+	Invalidate(false);
 }

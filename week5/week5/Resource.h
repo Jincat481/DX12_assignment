@@ -84,6 +84,7 @@
 #define IDS_FIND_TAB				302
 #define IDS_EXPLORER				305
 #define IDS_EDIT_MENU				306
+#define IDC_BTN_ADD_SHAPE			201
 
 // 다음은 새 개체에 사용할 기본값입니다.
 //

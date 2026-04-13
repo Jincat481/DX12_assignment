@@ -39,6 +39,8 @@ public:
     void OnMouseUp(int BtnState, int X, int Y);
     void OnMouseMove(int BtnState, int X, int Y);
 
+    // 도형 추가
+    void AddShape();
 private:
     // 파이프라인
     ComPtr<ID3D12Device>                device;
@@ -61,9 +63,12 @@ private:
     D3D12_INDEX_BUFFER_VIEW             indexBufferView;
     UINT                                indexCount;
 
+    int shapeCount = 1; // 현재 도형 수
+    static const int maxShapes = 3; // 최대 도형 수
     // 상수버퍼
-    ComPtr<ID3D12Resource>              constantBuffer;
+    ComPtr<ID3D12Resource>  constantBuffer;
     ObjectConstants* cbMappedData = nullptr;
+    UINT                    cbElementSize;  // 256바이트 정렬된 1개 크기
 
     // 동기화
     ComPtr<ID3D12Fence>                 fence;
