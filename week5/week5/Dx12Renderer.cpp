@@ -29,7 +29,7 @@ bool Dx12Renderer::LoadPipeline(HWND Hwnd, int Width, int Height)
 
     ComPtr<IDXGIFactory4> factory;
     CreateDXGIFactory1(IID_PPV_ARGS(&factory));
-    D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
+    D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device));
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
