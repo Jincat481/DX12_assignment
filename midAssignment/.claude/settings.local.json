@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls week5/*.sln)",
+      "Bash(ls *.sln)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" week5.sln //p:Configuration=Debug //p:Platform=x64 //nologo //v:minimal)"
+    ]
+  }
+}
