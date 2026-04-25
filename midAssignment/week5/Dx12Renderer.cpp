@@ -15,9 +15,7 @@ static XMFLOAT4X4 Identity4x4()
     return m;
 }
 
-// ═════════════════════════════════════════════════════════════════════
 // Initialize / LoadPipeline / LoadAssets   (BlendDemo::Initialize 순서)
-// ═════════════════════════════════════════════════════════════════════
 bool Dx12Renderer::Initialize(HWND Hwnd, int Width, int Height)
 {
     mHwnd = Hwnd; // FPS 타이틀 표시용
@@ -28,6 +26,19 @@ bool Dx12Renderer::Initialize(HWND Hwnd, int Width, int Height)
     // 델타타임 계산용 고해상도 카운터
     QueryPerformanceFrequency(&mPerfFreq);
     QueryPerformanceCounter(&mPrevCounter);
+
+    // FPS 카메라 초기 방향 설정: (0,2,-10) → 원점 방향 (Camera::LookAt 동일 계산)
+    {
+        XMVECTOR P  = XMLoadFloat3(&mEyePos);
+        XMVECTOR T  = XMVectorZero();               // 바라볼 타겟 (원점)
+        XMVECTOR wu = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+        XMVECTOR L  = XMVector3Normalize(XMVectorSubtract(T, P));
+        XMVECTOR R  = XMVector3Normalize(XMVector3Cross(wu, L));
+        XMVECTOR U  = XMVector3Cross(L, R);
+        XMStoreFloat3(&mCamLook,  L);
+        XMStoreFloat3(&mCamRight, R);
+        XMStoreFloat3(&mCamUp,    U);
+    }
 
     if (!LoadPipeline(Hwnd, Width, Height)) return false;
     if (!LoadAssets())                      return false;
@@ -94,7 +105,7 @@ bool Dx12Renderer::LoadAssets()
     BuildDescriptorHeaps();   // RTV/DSV + SRV 힙
     BuildShadersAndInputLayout();
     BuildLandGeometry();
-    BuildBoxGeometry();
+    BuildTreeSpritesGeometry();   // 박스 대신 나무 지오메트리
     BuildWavesGeometry();
     BuildRenderItems();
     BuildFrameResources();
@@ -130,24 +141,73 @@ void Dx12Renderer::Update()
     if (dt > 0.1f) dt = 0.1f;
     mTotalTime += dt;
 
+    OnKeyboardInput(dt);  // WASD 키 입력 처리 (Chapter 15)
     UpdateCamera();
     UpdateObjectCBs();
     UpdateWaves(dt);
     CalculateFrameStats();
 }
 
+// ─── OnKeyboardInput (Chapter 15::OnKeyboardInput 동일) ───────────────
+// WASD: Walk / Strafe
+void Dx12Renderer::OnKeyboardInput(float Dt)
+{
+    const float speed = 8.0f; // 단위/초 (지형 16×16 기준)
+
+    // W/S: Camera::Walk — mEyePos += ±speed * mCamLook
+    if (GetAsyncKeyState('W') & 0x8000)
+    {
+        XMVECTOR p = XMLoadFloat3(&mEyePos);
+        XMVECTOR l = XMLoadFloat3(&mCamLook);
+        XMStoreFloat3(&mEyePos, XMVectorMultiplyAdd(XMVectorReplicate( speed * Dt), l, p));
+    }
+    if (GetAsyncKeyState('S') & 0x8000)
+    {
+        XMVECTOR p = XMLoadFloat3(&mEyePos);
+        XMVECTOR l = XMLoadFloat3(&mCamLook);
+        XMStoreFloat3(&mEyePos, XMVectorMultiplyAdd(XMVectorReplicate(-speed * Dt), l, p));
+    }
+    // A/D: Camera::Strafe — mEyePos += ±speed * mCamRight
+    if (GetAsyncKeyState('A') & 0x8000)
+    {
+        XMVECTOR p = XMLoadFloat3(&mEyePos);
+        XMVECTOR r = XMLoadFloat3(&mCamRight);
+        XMStoreFloat3(&mEyePos, XMVectorMultiplyAdd(XMVectorReplicate(-speed * Dt), r, p));
+    }
+    if (GetAsyncKeyState('D') & 0x8000)
+    {
+        XMVECTOR p = XMLoadFloat3(&mEyePos);
+        XMVECTOR r = XMLoadFloat3(&mCamRight);
+        XMStoreFloat3(&mEyePos, XMVectorMultiplyAdd(XMVectorReplicate( speed * Dt), r, p));
+    }
+}
+
+// ─── UpdateCamera (Camera::UpdateViewMatrix 와 동일 로직) ─────────────
 void Dx12Renderer::UpdateCamera()
 {
-    // 구면좌표 → 카메라 위치
-    float x = mRadius * sinf(mPhi) * cosf(mTheta);
-    float z = mRadius * sinf(mPhi) * sinf(mTheta);
-    float y = mRadius * cosf(mPhi);
+    XMVECTOR R = XMLoadFloat3(&mCamRight);
+    XMVECTOR U = XMLoadFloat3(&mCamUp);
+    XMVECTOR L = XMLoadFloat3(&mCamLook);
+    XMVECTOR P = XMLoadFloat3(&mEyePos);
 
-    XMVECTOR pos    = XMVectorSet(x, y, z, 1.0f);
-    XMVECTOR target = XMVectorZero();
-    XMVECTOR up     = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    // 기저 벡터를 직교정규화 (누적 오차 방지)
+    L = XMVector3Normalize(L);
+    U = XMVector3Normalize(XMVector3Cross(L, R));
+    R = XMVector3Cross(U, L);
 
-    XMStoreFloat4x4(&mView, XMMatrixLookAtLH(pos, target, up));
+    float x = -XMVectorGetX(XMVector3Dot(P, R));
+    float y = -XMVectorGetX(XMVector3Dot(P, U));
+    float z = -XMVectorGetX(XMVector3Dot(P, L));
+
+    XMStoreFloat3(&mCamRight, R);
+    XMStoreFloat3(&mCamUp,    U);
+    XMStoreFloat3(&mCamLook,  L);
+
+    // 뷰 행렬 직접 기록 (Camera.cpp::UpdateViewMatrix 와 동일)
+    mView(0,0) = XMVectorGetX(R); mView(1,0) = XMVectorGetY(R); mView(2,0) = XMVectorGetZ(R); mView(3,0) = x;
+    mView(0,1) = XMVectorGetX(U); mView(1,1) = XMVectorGetY(U); mView(2,1) = XMVectorGetZ(U); mView(3,1) = y;
+    mView(0,2) = XMVectorGetX(L); mView(1,2) = XMVectorGetY(L); mView(2,2) = XMVectorGetZ(L); mView(3,2) = z;
+    mView(0,3) = 0.0f;            mView(1,3) = 0.0f;            mView(2,3) = 0.0f;            mView(3,3) = 1.0f;
 }
 
 void Dx12Renderer::UpdateObjectCBs()
@@ -250,9 +310,17 @@ void Dx12Renderer::LoadTextures()
         fenceTex->Filename.c_str(),
         fenceTex->Resource, fenceTex->UploadHeap);
 
+    auto treeTex = std::make_unique<Texture>();
+    treeTex->Name     = "treeArrayTex";
+    treeTex->Filename = L"../../Textures/treeArray2.dds";
+    DirectX::CreateDDSTextureFromFile12(device.Get(), commandList.Get(),
+        treeTex->Filename.c_str(),
+        treeTex->Resource, treeTex->UploadHeap);
+
     mTextures[grassTex->Name] = std::move(grassTex);
     mTextures[waterTex->Name] = std::move(waterTex);
     mTextures[fenceTex->Name] = std::move(fenceTex);
+    mTextures[treeTex->Name]  = std::move(treeTex);
 }
 
 // BuildRootSignature
@@ -340,33 +408,49 @@ void Dx12Renderer::BuildDescriptorHeaps()
     device->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(&dsvHeap));
     dsvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 
-    // SRV 힙 (텍스처 3개: 0=grass, 1=water, 2=fence)
+    // SRV 힙 (텍스처 4개: 0=grass, 1=water, 2=fence, 3=treeArray)
     // BlendDemo 와 동일하게 SHADER_VISIBLE 힙
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = 3;
+    srvHeapDesc.NumDescriptors = 4;
     srvHeapDesc.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvHeap));
     srvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // 각 텍스처에 대해 SRV 생성
-    auto createSrv = [&](ID3D12Resource* res, UINT heapSlot)
+    // Texture2D SRV (slot 0~2)
+    auto createSrv2D = [&](ID3D12Resource* res, UINT heapSlot)
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Format                  = res->GetDesc().Format;
-        srvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format                        = res->GetDesc().Format;
+        srvDesc.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Texture2D.MostDetailedMip     = 0;
         srvDesc.Texture2D.MipLevels           = res->GetDesc().MipLevels;
         srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-
         D3D12_CPU_DESCRIPTOR_HANDLE handle = mSrvHeap->GetCPUDescriptorHandleForHeapStart();
         handle.ptr += (SIZE_T)heapSlot * srvDescriptorSize;
         device->CreateShaderResourceView(res, &srvDesc, handle);
     };
-    createSrv(mTextures["grassTex"]->Resource.Get(), 0);
-    createSrv(mTextures["waterTex"]->Resource.Get(), 1);
-    createSrv(mTextures["fenceTex"]->Resource.Get(), 2);
+    createSrv2D(mTextures["grassTex"]->Resource.Get(), 0);
+    createSrv2D(mTextures["waterTex"]->Resource.Get(), 1);
+    createSrv2D(mTextures["fenceTex"]->Resource.Get(), 2);
+
+    // Texture2DArray SRV (slot 3) — treeArray2.dds
+    {
+        auto* res = mTextures["treeArrayTex"]->Resource.Get();
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping              = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format                               = res->GetDesc().Format;
+        srvDesc.ViewDimension                        = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        srvDesc.Texture2DArray.MostDetailedMip       = 0;
+        srvDesc.Texture2DArray.MipLevels             = res->GetDesc().MipLevels;
+        srvDesc.Texture2DArray.FirstArraySlice       = 0;
+        srvDesc.Texture2DArray.ArraySize             = res->GetDesc().DepthOrArraySize;
+        srvDesc.Texture2DArray.ResourceMinLODClamp   = 0.0f;
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = mSrvHeap->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += (SIZE_T)3 * srvDescriptorSize;
+        device->CreateShaderResourceView(res, &srvDesc, handle);
+    }
 }
 
 // BuildShadersAndInputLayout
@@ -439,6 +523,61 @@ void Dx12Renderer::BuildShadersAndInputLayout()
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    // ── 나무 전용 셰이더 (Texture2DArray, TexC.z = 배열 슬라이스 인덱스) ──
+    const char* treeShaderSrc = R"(
+        cbuffer cbPerObject : register(b0)
+        {
+            float4x4 gWorldViewProj;
+        };
+        Texture2DArray gTreeMapArray : register(t0);
+        SamplerState   gSampler      : register(s0);
+
+        struct VertexIn
+        {
+            float3 PosL  : POSITION;
+            float4 Color : COLOR;
+            float3 TexC  : TEXCOORD; // xy=uv, z=array slice
+        };
+        struct VertexOut
+        {
+            float4 PosH  : SV_POSITION;
+            float4 Color : COLOR;
+            float3 TexC  : TEXCOORD;
+        };
+
+        VertexOut TreeVS(VertexIn vin)
+        {
+            VertexOut vout;
+            vout.PosH  = mul(float4(vin.PosL, 1.0f), gWorldViewProj);
+            vout.Color = vin.Color;
+            vout.TexC  = vin.TexC;
+            return vout;
+        }
+        float4 TreePS(VertexOut pin) : SV_Target
+        {
+            float4 tex = gTreeMapArray.Sample(gSampler, pin.TexC); // z = 슬라이스
+            clip(tex.a - 0.1f); // 나무 윤곽 밖 픽셀 제거
+            return tex * pin.Color;
+        }
+    )";
+
+    ComPtr<ID3DBlob> treeVS, treePS;
+    D3DCompile(treeShaderSrc, strlen(treeShaderSrc), nullptr, nullptr, nullptr,
+        "TreeVS", "vs_5_0", flags, 0, &treeVS, &error);
+    D3DCompile(treeShaderSrc, strlen(treeShaderSrc), nullptr, nullptr, nullptr,
+        "TreePS", "ps_5_0", flags, 0, &treePS, &error);
+
+    mShaders["treeVS"] = treeVS;
+    mShaders["treePS"] = treePS;
+
+    // TreeVertex 전용 InputLayout (TEXCOORD 가 float3 — z 에 슬라이스 인덱스)
+    mTreeInputLayout =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 }
 
@@ -534,87 +673,91 @@ void Dx12Renderer::BuildLandGeometry()
     mGeometries["landGeo"] = std::move(geo);
 }
 
-// BuildBoxGeometry  (BlendDemo 의 BuildBoxGeometry 와 동일한 구조)
-void Dx12Renderer::BuildBoxGeometry()
+// ═════════════════════════════════════════════════════════════════════
+// BuildTreeSpritesGeometry
+// ① 지형에서 수면 위 버텍스를 후보로 수집 → mTreeCandidates
+// ② kMaxTrees 그루 수용 동적 VB (persistent map) 생성 → mTreeDynamicVB
+// ③ 인덱스 버퍼는 최대 용량으로 미리 채워 두고 (패턴이 고정이므로 한 번만 계산)
+//    실제 드로우는 mTreeRitem->IndexCount 로 제어한다.
+// ═════════════════════════════════════════════════════════════════════
+void Dx12Renderer::BuildTreeSpritesGeometry()
 {
-    // BoxApp.cpp 와 동일한 정점/인덱스
-    // 8 정점 박스 — vertex color 는 white 로 두고 텍스처가 그대로 보이게,
-    // UV 는 [0..1] 큐브 좌표로 (정확한 박스 매핑은 아니지만 색 변화는 보임)
-    std::array<Vertex, 8> vertices =
+    // ① 후보 위치 수집 (수면보다 높은 곳, local space h > 2.5)
+    GeometryGenerator geoGen;
+    GeometryGenerator::MeshData grid = geoGen.CreateGrid(160.0f, 160.0f, 50, 50);
+
+    mTreeCandidates.clear();
+    for (auto& v : grid.Vertices)
     {
-        Vertex({ XMFLOAT3(-2.0f, -0.0f, -1.0f), XMFLOAT4(1,1,1,1), XMFLOAT2(0,1) }),
-        Vertex({ XMFLOAT3(-0.0f, +2.0f, -1.0f), XMFLOAT4(1,1,1,1), XMFLOAT2(0,0) }),
-        Vertex({ XMFLOAT3(+2.0f, +0.0f, -1.0f), XMFLOAT4(1,1,1,1), XMFLOAT2(1,0) }),
-        Vertex({ XMFLOAT3(+0.0f, -2.0f, -1.0f), XMFLOAT4(1,1,1,1), XMFLOAT2(1,1) }),
-        Vertex({ XMFLOAT3(-2.0f, -0.0f, +1.0f), XMFLOAT4(1,1,1,1), XMFLOAT2(0,1) }),
-        Vertex({ XMFLOAT3(-0.0f, +2.0f, +1.0f), XMFLOAT4(1,1,1,1), XMFLOAT2(0,0) }),
-        Vertex({ XMFLOAT3(+2.0f, +0.0f, +1.0f), XMFLOAT4(1,1,1,1), XMFLOAT2(1,0) }),
-        Vertex({ XMFLOAT3(+0.0f, -2.0f, +1.0f), XMFLOAT4(1,1,1,1), XMFLOAT2(1,1) }),
-    };
-    std::array<uint16_t, 36> indices =
-    {
-        0,1,2,  0,2,3,
-        4,6,5,  4,7,6,
-        4,5,1,  4,1,0,
-        3,2,6,  3,6,7,
-        1,5,6,  1,6,2,
-        4,0,3,  4,3,7
-    };
+        float h = GetHillsHeight(v.Position.x, v.Position.z);
+        if (h > 2.5f)
+            mTreeCandidates.push_back(XMFLOAT3(v.Position.x, h, v.Position.z));
+    }
 
-    const UINT vbSize = (UINT)(vertices.size() * sizeof(Vertex));
-    const UINT ibSize = (UINT)(indices.size()  * sizeof(uint16_t));
+    // 슬라이스 수 저장
+    mTreeArraySlices = (UINT)mTextures["treeArrayTex"]->Resource->GetDesc().DepthOrArraySize;
+    if (mTreeArraySlices == 0) mTreeArraySlices = 4;
 
-    auto geo  = std::make_unique<MeshGeometry>();
-    geo->Name = "boxGeo";
+    // ② 동적 VB (kMaxTrees × 8 정점, persistent map)
+    const UINT vbSize = (UINT)(kMaxTrees * 8 * sizeof(TreeVertex));
 
-    // midAssignment 의 기존 패턴 유지: upload heap 에 직접 VB/IB 생성
-    D3D12_HEAP_PROPERTIES heapProp = {};
-    heapProp.Type = D3D12_HEAP_TYPE_UPLOAD;
-
+    D3D12_HEAP_PROPERTIES heapProp = { D3D12_HEAP_TYPE_UPLOAD };
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width            = vbSize;
     bufDesc.Height           = 1;
     bufDesc.DepthOrArraySize = 1;
     bufDesc.MipLevels        = 1;
     bufDesc.SampleDesc.Count = 1;
     bufDesc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    // VB
-    bufDesc.Width = vbSize;
     device->CreateCommittedResource(&heapProp, D3D12_HEAP_FLAG_NONE,
         &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr, IID_PPV_ARGS(&geo->VertexBufferGPU));
-    {
-        UINT8* p; D3D12_RANGE r = { 0, 0 };
-        geo->VertexBufferGPU->Map(0, &r, reinterpret_cast<void**>(&p));
-        memcpy(p, vertices.data(), vbSize);
-        geo->VertexBufferGPU->Unmap(0, nullptr);
-    }
+        nullptr, IID_PPV_ARGS(&mTreeDynamicVB));
+    { D3D12_RANGE r={0,0};
+      mTreeDynamicVB->Map(0, &r, reinterpret_cast<void**>(&mTreeMappedVertices)); }
 
-    // IB
+    // ③ 정적 IB (최대 kMaxTrees 그루 × 12 인덱스, 패턴은 고정)
+    const UINT ibSize = (UINT)(kMaxTrees * 12 * sizeof(uint16_t));
     bufDesc.Width = ibSize;
+    ComPtr<ID3D12Resource> ibRes;
     device->CreateCommittedResource(&heapProp, D3D12_HEAP_FLAG_NONE,
         &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr, IID_PPV_ARGS(&geo->IndexBufferGPU));
+        nullptr, IID_PPV_ARGS(&ibRes));
     {
-        UINT8* p; D3D12_RANGE r = { 0, 0 };
-        geo->IndexBufferGPU->Map(0, &r, reinterpret_cast<void**>(&p));
-        memcpy(p, indices.data(), ibSize);
-        geo->IndexBufferGPU->Unmap(0, nullptr);
+        uint16_t* p = nullptr; D3D12_RANGE r={0,0};
+        ibRes->Map(0, &r, reinterpret_cast<void**>(&p));
+        for (int t = 0; t < kMaxTrees; ++t)
+        {
+            uint16_t base = (uint16_t)(t * 8);
+            int      k    = t * 12;
+            p[k+ 0]=base+0; p[k+ 1]=base+1; p[k+ 2]=base+2;
+            p[k+ 3]=base+0; p[k+ 4]=base+2; p[k+ 5]=base+3;
+            p[k+ 6]=base+4; p[k+ 7]=base+5; p[k+ 8]=base+6;
+            p[k+ 9]=base+4; p[k+10]=base+6; p[k+11]=base+7;
+        }
+        ibRes->Unmap(0, nullptr);
     }
 
-    geo->VertexByteStride     = sizeof(Vertex);
+    // MeshGeometry 등록
+    auto geo  = std::make_unique<MeshGeometry>();
+    geo->Name = "treeSpritesGeo";
+    geo->VertexBufferGPU      = mTreeDynamicVB;
+    geo->IndexBufferGPU       = ibRes;
+    geo->VertexByteStride     = sizeof(TreeVertex);
     geo->VertexBufferByteSize = vbSize;
     geo->IndexFormat          = DXGI_FORMAT_R16_UINT;
     geo->IndexBufferByteSize  = ibSize;
 
     SubmeshGeometry submesh;
-    submesh.IndexCount         = (UINT)indices.size();
+    submesh.IndexCount         = 0; // 초기 0, AddTree 할 때마다 증가
     submesh.StartIndexLocation = 0;
     submesh.BaseVertexLocation = 0;
-    geo->DrawArgs["box"] = submesh;
+    geo->DrawArgs["trees"] = submesh;
 
-    mGeometries["boxGeo"] = std::move(geo);
+    mGeometries["treeSpritesGeo"] = std::move(geo);
+    mTreeCurrentCount = 0;
+    mTreePositions.clear();
 }
 
 // BuildWavesGeometry  (BlendDemo::BuildWavesGeometry 와 동일한 인덱스 구성)
@@ -781,6 +924,19 @@ void Dx12Renderer::BuildPSOs()
     ComPtr<ID3D12PipelineState> alphaTestPso;
     device->CreateGraphicsPipelineState(&alphaTestPsoDesc, IID_PPV_ARGS(&alphaTestPso));
     mPSOs["alphaTested"] = alphaTestPso;
+
+    // ── Tree PSO (Texture2DArray + TreeVertex InputLayout + clip + CullNone) ──
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC treePsoDesc = opaquePsoDesc;
+    treePsoDesc.InputLayout = { mTreeInputLayout.data(), (UINT)mTreeInputLayout.size() };
+    treePsoDesc.VS = { mShaders["treeVS"]->GetBufferPointer(),
+                       mShaders["treeVS"]->GetBufferSize() };
+    treePsoDesc.PS = { mShaders["treePS"]->GetBufferPointer(),
+                       mShaders["treePS"]->GetBufferSize() };
+    treePsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+    ComPtr<ID3D12PipelineState> treePso;
+    device->CreateGraphicsPipelineState(&treePsoDesc, IID_PPV_ARGS(&treePso));
+    mPSOs["tree"] = treePso;
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -860,29 +1016,22 @@ void Dx12Renderer::BuildRenderItems()
         mAllRitems.push_back(std::move(landRitem));
     }
 
-    // ── Box RenderItem × maxShapes (RenderLayer::Opaque) — fence 텍스처 ──
-    XMFLOAT3 positions[] =
+    // ── Tree RenderItem (RenderLayer::AlphaTested) ──
     {
-        {  0.0f, 1.5f, 0.0f },
-        { -3.0f, 1.5f, 0.0f },
-        {  3.0f, 1.5f, 0.0f },
-    };
-    for (int i = 0; i < maxShapes; ++i)
-    {
-        auto boxRitem = std::make_unique<RenderItem>();
-        XMStoreFloat4x4(&boxRitem->World,
-            XMMatrixTranslation(positions[i].x, positions[i].y, positions[i].z));
-        boxRitem->ObjCBIndex        = objCBIndex++;
-        boxRitem->Geo               = mGeometries["boxGeo"].get();
-        boxRitem->PrimitiveType     = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-        boxRitem->IndexCount        = boxRitem->Geo->DrawArgs["box"].IndexCount;
-        boxRitem->StartIndexLocation= boxRitem->Geo->DrawArgs["box"].StartIndexLocation;
-        boxRitem->BaseVertexLocation= boxRitem->Geo->DrawArgs["box"].BaseVertexLocation;
-        boxRitem->SrvHeapIndex      = 2; // fence
+        auto treeRitem = std::make_unique<RenderItem>();
+        XMStoreFloat4x4(&treeRitem->World,
+            XMMatrixScaling(kWorldScale, kWorldScale, kWorldScale));
+        treeRitem->ObjCBIndex        = objCBIndex++;
+        treeRitem->Geo               = mGeometries["treeSpritesGeo"].get();
+        treeRitem->PrimitiveType     = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        treeRitem->IndexCount        = 0;  // 초기엔 나무 없음, AddTree() 할 때마다 증가
+        treeRitem->StartIndexLocation= 0;
+        treeRitem->BaseVertexLocation= 0;
+        treeRitem->SrvHeapIndex      = 3;  // treeArray2.dds (Texture2DArray)
 
-        // WireFence 텍스처는 alphaTested 레이어 (BlendDemo 와 동일)
-        mRitemLayer[(int)RenderLayer::AlphaTested].push_back(boxRitem.get());
-        mAllRitems.push_back(std::move(boxRitem));
+        mTreeRitem = treeRitem.get();
+        mRitemLayer[(int)RenderLayer::AlphaTested].push_back(treeRitem.get());
+        mAllRitems.push_back(std::move(treeRitem));
     }
 }
 
@@ -990,15 +1139,9 @@ void Dx12Renderer::PopulateCommandList()
     commandList->SetPipelineState(mPSOs["opaque"].Get());
     DrawRenderItems(commandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
 
-    // ② AlphaTested 레이어 (CullNone + clip) — fence 박스 shapeCount 만큼
-    commandList->SetPipelineState(mPSOs["alphaTested"].Get());
-    {
-        const auto& at = mRitemLayer[(int)RenderLayer::AlphaTested];
-        std::vector<RenderItem*> active;
-        for (int i = 0; i < shapeCount && i < (int)at.size(); ++i)
-            active.push_back(at[i]);
-        DrawRenderItems(commandList.Get(), active);
-    }
+    // ② AlphaTested 레이어 — tree PSO (Texture2DArray + clip + CullNone)
+    commandList->SetPipelineState(mPSOs["tree"].Get());
+    DrawRenderItems(commandList.Get(), mRitemLayer[(int)RenderLayer::AlphaTested]);
 
     // ③ Waves 레이어 (transparent PSO)
     commandList->SetPipelineState(mPSOs["waves"].Get());
@@ -1037,34 +1180,111 @@ void Dx12Renderer::OnMouseUp(int BtnState, int X, int Y)
 
 void Dx12Renderer::OnMouseMove(int BtnState, int X, int Y)
 {
-    if (BtnState & MK_LBUTTON) // 왼쪽 버튼: 회전
+    if (BtnState & MK_LBUTTON) // 왼쪽 드래그: FPS 시점 회전
     {
         float dx = XMConvertToRadians(0.25f * (float)(X - mLastMousePos.x));
         float dy = XMConvertToRadians(0.25f * (float)(Y - mLastMousePos.y));
-        mTheta += dx;
-        mPhi   += dy;
-        mPhi = mPhi < 0.1f ? 0.1f : (mPhi > XM_PI - 0.1f ? XM_PI - 0.1f : mPhi);
-    }
-    else if (BtnState & MK_RBUTTON) // 오른쪽 버튼: 줌
-    {
-        float dx = 0.005f * (float)(X - mLastMousePos.x);
-        float dy = 0.005f * (float)(Y - mLastMousePos.y);
-        mRadius += dx - dy;
-        mRadius = mRadius < 3.0f ? 3.0f : (mRadius > 15.0f ? 15.0f : mRadius);
+
+        // Pitch(dy): Camera::Pitch — Right 축 기준 Up, Look 회전
+        {
+            XMMATRIX R = XMMatrixRotationAxis(XMLoadFloat3(&mCamRight), dy);
+            XMStoreFloat3(&mCamUp,   XMVector3TransformNormal(XMLoadFloat3(&mCamUp),   R));
+            XMStoreFloat3(&mCamLook, XMVector3TransformNormal(XMLoadFloat3(&mCamLook), R));
+        }
+        // RotateY(dx): Camera::RotateY — 월드 Y 축 기준 Right, Up, Look 회전
+        {
+            XMMATRIX R = XMMatrixRotationY(dx);
+            XMStoreFloat3(&mCamRight, XMVector3TransformNormal(XMLoadFloat3(&mCamRight), R));
+            XMStoreFloat3(&mCamUp,    XMVector3TransformNormal(XMLoadFloat3(&mCamUp),    R));
+            XMStoreFloat3(&mCamLook,  XMVector3TransformNormal(XMLoadFloat3(&mCamLook),  R));
+        }
     }
     mLastMousePos.x = X;
     mLastMousePos.y = Y;
 }
 
-void Dx12Renderer::AddShape()
-{
-    if (shapeCount >= maxShapes) return;
-    shapeCount++;
-}
-
 // ═════════════════════════════════════════════════════════════════════
 // WaitForPreviousFrame / Cleanup
 // ═════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════
+// 나무 심기 관련
+// ═════════════════════════════════════════════════════════════════════
+
+// 정점 하나(그루)를 mapped VB 에 기록 (AddTree / LoadTrees 공용)
+void Dx12Renderer::WriteTreeVertex(int Index, const XMFLOAT3& Pos)
+{
+    const float halfW = 1.6f;
+    const float treeH = 4.5f;
+    float ai = (float)(rand() % mTreeArraySlices);
+    XMFLOAT4 white(1, 1, 1, 1);
+    int base = Index * 8;
+
+    mTreeMappedVertices[base+0] = { XMFLOAT3(Pos.x-halfW, Pos.y,       Pos.z), white, XMFLOAT3(0,1,ai) };
+    mTreeMappedVertices[base+1] = { XMFLOAT3(Pos.x-halfW, Pos.y+treeH, Pos.z), white, XMFLOAT3(0,0,ai) };
+    mTreeMappedVertices[base+2] = { XMFLOAT3(Pos.x+halfW, Pos.y+treeH, Pos.z), white, XMFLOAT3(1,0,ai) };
+    mTreeMappedVertices[base+3] = { XMFLOAT3(Pos.x+halfW, Pos.y,       Pos.z), white, XMFLOAT3(1,1,ai) };
+    mTreeMappedVertices[base+4] = { XMFLOAT3(Pos.x, Pos.y,       Pos.z-halfW), white, XMFLOAT3(0,1,ai) };
+    mTreeMappedVertices[base+5] = { XMFLOAT3(Pos.x, Pos.y+treeH, Pos.z-halfW), white, XMFLOAT3(0,0,ai) };
+    mTreeMappedVertices[base+6] = { XMFLOAT3(Pos.x, Pos.y+treeH, Pos.z+halfW), white, XMFLOAT3(1,0,ai) };
+    mTreeMappedVertices[base+7] = { XMFLOAT3(Pos.x, Pos.y,       Pos.z+halfW), white, XMFLOAT3(1,1,ai) };
+}
+
+// 나무 심기 버튼 핸들러 — 후보 중 랜덤 한 곳에 1 그루 추가
+void Dx12Renderer::AddTree()
+{
+    if (mTreeCurrentCount >= kMaxTrees || mTreeCandidates.empty()) return;
+
+    int idx = rand() % (int)mTreeCandidates.size();
+    const XMFLOAT3& pos = mTreeCandidates[idx];
+
+    WriteTreeVertex(mTreeCurrentCount, pos);
+    mTreePositions.push_back(pos);
+    mTreeCurrentCount++;
+    mTreeRitem->IndexCount = (UINT)mTreeCurrentCount * 12;
+}
+
+// 저장 — 현재 심긴 나무 위치를 바이너리 파일에 기록
+void Dx12Renderer::SaveTrees(const CString& Filename)
+{
+    FILE* f = nullptr;
+    _wfopen_s(&f, Filename.GetString(), L"wb");
+    if (!f) return;
+    int cnt = (int)mTreePositions.size();
+    fwrite(&cnt, sizeof(int), 1, f);
+    if (cnt > 0)
+        fwrite(mTreePositions.data(), sizeof(XMFLOAT3), cnt, f);
+    fclose(f);
+}
+
+// 불러오기 — 파일에서 나무 위치를 읽어 VB 재구성
+bool Dx12Renderer::LoadTrees(const CString& Filename)
+{
+    FILE* f = nullptr;
+    _wfopen_s(&f, Filename.GetString(), L"rb");
+    if (!f) return false;
+
+    int cnt = 0;
+    fread(&cnt, sizeof(int), 1, f);
+    cnt = min(cnt, kMaxTrees);
+
+    std::vector<XMFLOAT3> positions(cnt);
+    if (cnt > 0)
+        fread(positions.data(), sizeof(XMFLOAT3), cnt, f);
+    fclose(f);
+
+    // VB 재구성
+    mTreeCurrentCount = 0;
+    mTreePositions.clear();
+    for (auto& p : positions)
+    {
+        WriteTreeVertex(mTreeCurrentCount, p);
+        mTreePositions.push_back(p);
+        mTreeCurrentCount++;
+    }
+    mTreeRitem->IndexCount = (UINT)mTreeCurrentCount * 12;
+    return true;
+}
+
 void Dx12Renderer::WaitForPreviousFrame()
 {
     const UINT64 currentFence = fenceValue;
@@ -1083,5 +1303,6 @@ void Dx12Renderer::Cleanup()
     WaitForPreviousFrame();
     if (mObjectCB)        mObjectCB->Unmap(0, nullptr);
     if (mWavesDynamicVB)  mWavesDynamicVB->Unmap(0, nullptr);
+    if (mTreeDynamicVB)   mTreeDynamicVB->Unmap(0, nullptr);
     if (fenceEvent)       CloseHandle(fenceEvent);
 }

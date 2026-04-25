@@ -34,7 +34,10 @@ BEGIN_MESSAGE_MAP(Cweek5View, CView)
 	ON_WM_LBUTTONUP()
 	ON_WM_RBUTTONDOWN()
 	ON_WM_MOUSEMOVE()
-	ON_BN_CLICKED(IDC_BTN_ADD_SHAPE, &Cweek5View::OnBtnAddShape)
+	ON_BN_CLICKED(IDC_BTN_ADD_TREE, &Cweek5View::OnBtnAddTree)
+	ON_BN_CLICKED(IDC_BTN_SAVE,     &Cweek5View::OnBtnSave)
+	ON_BN_CLICKED(IDC_BTN_LOAD,     &Cweek5View::OnBtnLoad)
+	ON_WM_TIMER()
 END_MESSAGE_MAP()
 
 // Cweek5View 생성/소멸
@@ -144,16 +147,28 @@ void Cweek5View::OnInitialUpdate()
 	GetClientRect(&rect);
 	dx12Renderer.Initialize(GetSafeHwnd(), rect.Width(), rect.Height());
 
-	// 버튼 생성
-	btnAddShape.Create(L"도형 추가", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-		CRect(10, 10, 110, 40), // 위치(x, y, width, heigth) 
-		this, IDC_BTN_ADD_SHAPE);
+	// 버튼 생성 (나무 심기 / 저장 / 불러오기)
+	btnAddTree.Create(L"나무 심기", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		CRect(10, 10, 110, 40), this, IDC_BTN_ADD_TREE);
+	btnSave.Create(L"저장", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		CRect(120, 10, 200, 40), this, IDC_BTN_SAVE);
+	btnLoad.Create(L"불러오기", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		CRect(210, 10, 310, 40), this, IDC_BTN_LOAD);
+
+	// ~16ms 주기 타이머 → WASD 키 입력 시에도 연속 렌더링
+	SetTimer(1, 16, nullptr);
 }
 
 void Cweek5View::OnDestroy()
 {
+	KillTimer(1);
 	dx12Renderer.Cleanup();
 	CView::OnDestroy();
+}
+
+void Cweek5View::OnTimer(UINT_PTR nIDEvent)
+{
+	Invalidate(FALSE); // 매 틱마다 재렌더링 → WASD 이동 반영
 }
 
 void Cweek5View::OnLButtonDown(UINT nFlags, CPoint point)
@@ -178,8 +193,35 @@ void Cweek5View::OnMouseMove(UINT nFlags, CPoint point)
 	Invalidate(FALSE); // 다음 프레임 렌더 요청
 }
 
-void Cweek5View::OnBtnAddShape() 
+void Cweek5View::OnBtnAddTree()
 {
-	dx12Renderer.AddShape();
-	Invalidate(false);
+	dx12Renderer.AddTree();
+	Invalidate(FALSE);
+}
+
+void Cweek5View::OnBtnSave()
+{
+	CFileDialog dlg(FALSE,           // FALSE = 저장 대화상자
+		L"tree",                     // 기본 확장자
+		L"trees.tree",               // 기본 파일명
+		OFN_OVERWRITEPROMPT,
+		L"Tree Files (*.tree)|*.tree|All Files (*.*)|*.*||");
+	if (dlg.DoModal() == IDOK)
+	{
+		dx12Renderer.SaveTrees(dlg.GetPathName());
+	}
+}
+
+void Cweek5View::OnBtnLoad()
+{
+	CFileDialog dlg(TRUE,            // TRUE = 열기 대화상자
+		L"tree",
+		nullptr,
+		OFN_FILEMUSTEXIST,
+		L"Tree Files (*.tree)|*.tree|All Files (*.*)|*.*||");
+	if (dlg.DoModal() == IDOK)
+	{
+		dx12Renderer.LoadTrees(dlg.GetPathName());
+		Invalidate(FALSE);
+	}
 }

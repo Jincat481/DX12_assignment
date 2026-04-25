@@ -74,6 +74,14 @@ struct MeshGeometry
     }
 };
 
+// 나무/풀 전용 정점 — TexC.z 에 Texture2DArray 슬라이스 인덱스를 담는다
+struct TreeVertex
+{
+    XMFLOAT3 Pos;
+    XMFLOAT4 Color;
+    XMFLOAT3 TexC; // x=u, y=v, z=array_slice (float cast)
+};
+
 // BlendDemo 의 Texture 와 동일 구조
 struct Texture
 {
@@ -133,8 +141,10 @@ public:
     void OnMouseUp(int BtnState, int X, int Y);
     void OnMouseMove(int BtnState, int X, int Y);
 
-    // 도형 추가 (midAssignment 기존 로직 그대로)
-    void AddShape();
+    // 나무 심기 / 저장 / 불러오기
+    void AddTree();
+    void SaveTrees(const CString& Filename);
+    bool LoadTrees(const CString& Filename);
 
 private:
     // ─── 파이프라인 ───────────────────────────────────────────
@@ -156,6 +166,7 @@ private:
     std::unordered_map<std::string, ComPtr<ID3D12PipelineState>>   mPSOs;
     std::unordered_map<std::string, std::unique_ptr<Texture>>      mTextures;
     std::vector<D3D12_INPUT_ELEMENT_DESC>                          mInputLayout;
+    std::vector<D3D12_INPUT_ELEMENT_DESC>                          mTreeInputLayout; // TreeVertex 전용
 
     // ─── 렌더 아이템 (BlendDemo 와 동일 구조) ────────────────
     std::vector<std::unique_ptr<RenderItem>> mAllRitems;
@@ -164,8 +175,18 @@ private:
 
     // Waves
     std::unique_ptr<Waves>   mWaves;
-    ComPtr<ID3D12Resource>   mWavesDynamicVB; // upload heap, persistent map
+    ComPtr<ID3D12Resource>   mWavesDynamicVB;
     Vertex*                  mWavesMappedVertices = nullptr;
+
+    // ─── 동적 나무 (버튼 클릭마다 1그루씩 추가) ──────────────
+    static const int         kMaxTrees = 500;
+    std::vector<XMFLOAT3>   mTreeCandidates;       // 심을 수 있는 후보 위치
+    std::vector<XMFLOAT3>   mTreePositions;         // 현재 심긴 나무 위치
+    ComPtr<ID3D12Resource>   mTreeDynamicVB;         // persistent mapped VB
+    TreeVertex*              mTreeMappedVertices = nullptr;
+    int                      mTreeCurrentCount   = 0;
+    UINT                     mTreeArraySlices    = 4; // treeArray2.dds 슬라이스 수
+    RenderItem*              mTreeRitem          = nullptr;
 
     // ─── ObjectCB (BlendDemo 의 FrameResource::ObjectCB 대응) ─
     // 메인패스 CB 는 사용하지 않는다.
@@ -178,17 +199,17 @@ private:
     UINT64              fenceValue = 0;
     HANDLE              fenceEvent = nullptr;
 
-    // ─── 카메라 (BoxApp/BlendDemo 동일) ────────────────────
+    // ─── 카메라 (Chapter 15 FPS 방식) ──────────────────────
     XMFLOAT4X4 mView;
     XMFLOAT4X4 mProj;
-    float      mTheta  = 1.5f * XM_PI;
-    float      mPhi    = XM_PIDIV4;
-    float      mRadius = 5.0f;
+    // FPS 카메라 기저 벡터 (Camera::UpdateViewMatrix 와 동일 구조)
+    XMFLOAT3   mEyePos   = {  0.0f, 2.0f, -10.0f };
+    XMFLOAT3   mCamRight = {  1.0f, 0.0f,   0.0f };
+    XMFLOAT3   mCamUp    = {  0.0f, 1.0f,   0.0f };
+    XMFLOAT3   mCamLook  = {  0.0f, 0.0f,   1.0f };
     POINT      mLastMousePos;
 
-    // ─── 도형 개수 (midAssignment 기존 로직 그대로) ────────
-    int              shapeCount = 1; // 현재 도형 수
-    static const int maxShapes  = 3; // 최대 도형 수
+    // (AddShape/shapeCount 는 제거 — 나무 심기로 대체)
 
     // ─── 타이밍 (BlendDemo 의 GameTimer 대응) ──────────────
     float         mTotalTime       = 0.0f;
@@ -213,6 +234,7 @@ private:
     bool LoadAssets();
 
     // ─── Update (BlendDemo 와 동일 분리) ───────────────────
+    void OnKeyboardInput(float Dt);  // WASD 이동 (Chapter 15)
     void UpdateCamera();
     void UpdateObjectCBs();
     void UpdateWaves(float Dt);
@@ -223,8 +245,8 @@ private:
     void BuildRootSignature();
     void BuildDescriptorHeaps();   // RTV/DSV/SRV 모두 생성
     void BuildShadersAndInputLayout();
-    void BuildLandGeometry();      // BlendDemo 와 동일: Hills 높이맵 적용한 grid
-    void BuildBoxGeometry();
+    void BuildLandGeometry();          // BlendDemo 와 동일: Hills 높이맵 적용한 grid
+    void BuildTreeSpritesGeometry();   // 동적 VB 준비 + 후보 위치 계산
     void BuildWavesGeometry();
     void BuildPSOs();
     void BuildFrameResources();    // ObjectCB 단일 버퍼 생성
@@ -236,6 +258,9 @@ private:
     XMFLOAT3 GetHillsNormal(float X, float Z) const;
 
     // ─── Draw ────────────────────────────────────────────
+    // 나무 정점 하나 기록 (AddTree / LoadTrees 공용)
+    void WriteTreeVertex(int Index, const XMFLOAT3& Pos);
+
     void DrawRenderItems(ID3D12GraphicsCommandList* Cmd,
                          const std::vector<RenderItem*>& Ritems);
     void PopulateCommandList();

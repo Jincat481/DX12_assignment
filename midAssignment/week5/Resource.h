@@ -85,6 +85,9 @@
 #define IDS_EXPLORER				305
 #define IDS_EDIT_MENU				306
 #define IDC_BTN_ADD_SHAPE			201
+#define IDC_BTN_ADD_TREE			202
+#define IDC_BTN_SAVE				203
+#define IDC_BTN_LOAD				204
 
 // 다음은 새 개체에 사용할 기본값입니다.
 //
