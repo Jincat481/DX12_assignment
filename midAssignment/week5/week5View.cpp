@@ -193,6 +193,7 @@ void Cweek5View::OnMouseMove(UINT nFlags, CPoint point)
 	Invalidate(FALSE); // 다음 프레임 렌더 요청
 }
 
+// 
 void Cweek5View::OnBtnAddTree()
 {
 	dx12Renderer.AddTree();

@@ -1,0 +1,16 @@
+# Claude Code 설정 (로컬 전용)
+.claude/
+
+# Visual Studio 빌드 산출물
+x64/
+Debug/
+Release/
+*.user
+.vs/
+
+# 빌드 중간 파일
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
