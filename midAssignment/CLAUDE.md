@@ -48,13 +48,30 @@ Waves       → 파도 (SRC_ALPHA / INV_SRC_ALPHA 블렌딩)
 ### 루트 시그니처
 - slot 0: SRV descriptor table (t0) — PS 가시
 - slot 1: CBV (b0, ObjectConstants) — VS 가시
+- slot 2: CBV (b1, PassConstants) — PS 가시 (낮/밤 라이팅)
 - static sampler s0: Linear Wrap
 
-### ObjectConstants (셰이더 CB)
+### ObjectConstants / PassConstants (셰이더 CB)
 ```cpp
 struct ObjectConstants { XMFLOAT4X4 WorldViewProj; };
 // UpdateObjectCBs: WVP = transpose(world * view * proj)
+
+struct PassConstants {
+    XMFLOAT3 SunDir;       float pad0; // 태양으로 향하는 방향
+    XMFLOAT3 SunColor;     float pad1; // 직접광 색
+    XMFLOAT3 AmbientColor; float pad2; // 환경광 색
+};
 ```
+
+### Vertex 레이아웃 (Land/Waves 공용, 48 byte)
+| offset | 필드 | 형식 |
+|--------|------|------|
+| 0  | POSITION | float3 |
+| 12 | COLOR    | float4 |
+| 28 | NORMAL   | float3 — 람베르트 라이팅용 |
+| 40 | TEXCOORD | float2 |
+
+`TreeVertex`(40 byte) 는 별도 InputLayout 사용 (변경 없음).
 
 ---
 
@@ -103,10 +120,34 @@ struct ObjectConstants { XMFLOAT4X4 WorldViewProj; };
 ## MFC 버튼 (week5View)
 
 ```
-IDC_BTN_ADD_TREE (202) → OnBtnAddTree() → dx12Renderer.AddTree()
-IDC_BTN_SAVE     (203) → OnBtnSave()    → CFileDialog → SaveTrees()
-IDC_BTN_LOAD     (204) → OnBtnLoad()    → CFileDialog → LoadTrees()
+IDC_BTN_ADD_TREE        (202) → OnBtnAddTree()   → dx12Renderer.AddTree()
+IDC_BTN_SAVE            (203) → OnBtnSave()      → CFileDialog → SaveTrees()
+IDC_BTN_LOAD            (204) → OnBtnLoad()      → CFileDialog → LoadTrees()
+IDC_BTN_TOGGLE_DAYNIGHT (205) → OnBtnDayNight()  → dx12Renderer.ToggleDayNight()
 ```
+
+---
+
+## 낮/밤 조명 시스템
+
+### 동작 방식
+1. **버튼 클릭**: `OnBtnDayNight()` → `dx12Renderer.ToggleDayNight()` → `mIsNight` 플래그 토글
+2. **매 프레임 보간**: `UpdatePassCB(dt)` 가 `mDayBlend` 를 목표값(낮=1 / 밤=0)으로 1초 안에 선형 보간
+3. **PassConstants 기록**: 보간된 `mDayBlend` 로 `SunDir / SunColor / AmbientColor / 하늘색` 을 lerp 해서 PassCB 에 기록
+4. **셰이더 적용**: PS 에서 `tex * (Ambient + SunColor * saturate(dot(N, SunDir)))` 람베르트 라이팅
+5. **하늘색**: `mClearColor` 가 같은 보간값으로 갱신되어 `ClearRenderTargetView` 에 사용
+
+### 라이팅 파라미터
+| 항목         | 낮                        | 밤                        |
+|--------------|---------------------------|---------------------------|
+| SunDir       | (0.6, 0.7, -0.4) 정규화   | (-0.3, 0.5, 0.6) 정규화   |
+| SunColor     | (1.00, 0.96, 0.85) 따뜻함 | (0.10, 0.12, 0.25) 푸름    |
+| AmbientColor | (0.35, 0.35, 0.40)        | (0.05, 0.05, 0.10)        |
+| 하늘색       | (0.69, 0.77, 0.87)        | (0.02, 0.02, 0.07)        |
+
+### 셰이더별 적용
+- **standardVS / PS / PS_AlphaTest**: 정점 NORMAL 을 받아 람베르트 (지형/파도)
+- **TreeVS / TreePS**: 빌보드라 노멀이 부정확 → `Ambient + 0.5 * SunColor` 균일 톤으로 단순 모듈레이션
 
 ---
 
@@ -126,6 +167,13 @@ XMFLOAT3 mEyePos, mCamRight, mCamUp, mCamLook;
 // 파도
 std::unique_ptr<Waves> mWaves;
 Vertex*                mWavesMappedVertices;
+
+// 낮/밤
+bool      mIsNight;       // 토글 목표 (false=낮, true=밤)
+float     mDayBlend;      // 1=낮, 0=밤 (1초간 보간)
+XMFLOAT4  mClearColor;    // 하늘색, 매 프레임 갱신
+ComPtr<ID3D12Resource> mPassCB;
+BYTE*     mPassCBMapped;
 ```
 
 ---

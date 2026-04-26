@@ -34,9 +34,10 @@ BEGIN_MESSAGE_MAP(Cweek5View, CView)
 	ON_WM_LBUTTONUP()
 	ON_WM_RBUTTONDOWN()
 	ON_WM_MOUSEMOVE()
-	ON_BN_CLICKED(IDC_BTN_ADD_TREE, &Cweek5View::OnBtnAddTree)
-	ON_BN_CLICKED(IDC_BTN_SAVE,     &Cweek5View::OnBtnSave)
-	ON_BN_CLICKED(IDC_BTN_LOAD,     &Cweek5View::OnBtnLoad)
+	ON_BN_CLICKED(IDC_BTN_ADD_TREE,        &Cweek5View::OnBtnAddTree)
+	ON_BN_CLICKED(IDC_BTN_SAVE,            &Cweek5View::OnBtnSave)
+	ON_BN_CLICKED(IDC_BTN_LOAD,            &Cweek5View::OnBtnLoad)
+	ON_BN_CLICKED(IDC_BTN_TOGGLE_DAYNIGHT, &Cweek5View::OnBtnDayNight)
 	ON_WM_TIMER()
 END_MESSAGE_MAP()
 
@@ -154,6 +155,8 @@ void Cweek5View::OnInitialUpdate()
 		CRect(120, 10, 200, 40), this, IDC_BTN_SAVE);
 	btnLoad.Create(L"불러오기", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
 		CRect(210, 10, 310, 40), this, IDC_BTN_LOAD);
+	btnDayNight.Create(L"낮/밤 전환", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		CRect(320, 10, 440, 40), this, IDC_BTN_TOGGLE_DAYNIGHT);
 
 	// ~16ms 주기 타이머 → WASD 키 입력 시에도 연속 렌더링
 	SetTimer(1, 16, nullptr);
@@ -225,4 +228,11 @@ void Cweek5View::OnBtnLoad()
 		dx12Renderer.LoadTrees(dlg.GetPathName());
 		Invalidate(FALSE);
 	}
+}
+
+// 낮/밤 전환 — 1초간 부드럽게 보간된다
+void Cweek5View::OnBtnDayNight()
+{
+	dx12Renderer.ToggleDayNight();
+	Invalidate(FALSE);
 }

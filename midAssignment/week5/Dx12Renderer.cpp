@@ -6,6 +6,7 @@
 #include <vector>
 #include <cstdlib>
 #include <cassert>
+#include <algorithm>
 
 // 단위행렬 헬퍼
 static XMFLOAT4X4 Identity4x4()
@@ -145,6 +146,7 @@ void Dx12Renderer::Update()
     UpdateCamera();
     UpdateObjectCBs();
     UpdateWaves(dt);
+    UpdatePassCB(dt);     // 낮/밤 보간 + 태양/앰비언트/하늘색 갱신
     CalculateFrameStats();
 }
 
@@ -326,6 +328,7 @@ void Dx12Renderer::LoadTextures()
 // BuildRootSignature
 //   slot 0: SRV descriptor table  (t0) — diffuse texture
 //   slot 1: CBV                    (b0) — ObjectCB (WVP)
+//   slot 2: CBV                    (b1) — PassCB   (태양 방향/색, 앰비언트)
 //   static sampler s0              — Linear Wrap
 void Dx12Renderer::BuildRootSignature()
 {
@@ -336,7 +339,7 @@ void Dx12Renderer::BuildRootSignature()
     srvRange.RegisterSpace                     = 0;
     srvRange.OffsetInDescriptorsFromTableStart = 0;
 
-    D3D12_ROOT_PARAMETER rootParams[2] = {};
+    D3D12_ROOT_PARAMETER rootParams[3] = {};
 
     // slot 0: SRV table (PS 에서 사용)
     rootParams[0].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -349,6 +352,12 @@ void Dx12Renderer::BuildRootSignature()
     rootParams[1].Descriptor.ShaderRegister = 0; // b0
     rootParams[1].Descriptor.RegisterSpace  = 0;
     rootParams[1].ShaderVisibility          = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    // slot 2: PassCB (PS 에서 라이팅 계산에 사용)
+    rootParams[2].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[2].Descriptor.ShaderRegister = 1; // b1
+    rootParams[2].Descriptor.RegisterSpace  = 0;
+    rootParams[2].ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;
 
     // 정적 샘플러: Linear Wrap (s0)
     D3D12_STATIC_SAMPLER_DESC sampler = {};
@@ -456,11 +465,17 @@ void Dx12Renderer::BuildDescriptorHeaps()
 // BuildShadersAndInputLayout
 void Dx12Renderer::BuildShadersAndInputLayout()
 {
-    // 텍스처를 샘플하고 vertex color 와 곱하는 간이 셰이더
+    // 텍스처를 샘플하고 람베르트 라이팅(태양+앰비언트) 적용
     const char* shaderSource = R"(
         cbuffer cbPerObject : register(b0)
         {
             float4x4 gWorldViewProj;
+        };
+        cbuffer cbPass : register(b1)
+        {
+            float3 gSunDir;       float gPad0;
+            float3 gSunColor;     float gPad1;
+            float3 gAmbient;      float gPad2;
         };
 
         Texture2D    gDiffuseMap : register(t0);
@@ -468,29 +483,36 @@ void Dx12Renderer::BuildShadersAndInputLayout()
 
         struct VertexIn
         {
-            float3 PosL  : POSITION;
-            float4 Color : COLOR;
-            float2 TexC  : TEXCOORD;
+            float3 PosL    : POSITION;
+            float4 Color   : COLOR;
+            float3 NormalL : NORMAL;
+            float2 TexC    : TEXCOORD;
         };
         struct VertexOut
         {
-            float4 PosH  : SV_POSITION;
-            float4 Color : COLOR;
-            float2 TexC  : TEXCOORD;
+            float4 PosH    : SV_POSITION;
+            float4 Color   : COLOR;
+            float3 NormalW : NORMAL;
+            float2 TexC    : TEXCOORD;
         };
 
         VertexOut VS(VertexIn vin)
         {
             VertexOut vout;
-            vout.PosH  = mul(float4(vin.PosL, 1.0f), gWorldViewProj);
-            vout.Color = vin.Color;
-            vout.TexC  = vin.TexC;
+            vout.PosH    = mul(float4(vin.PosL, 1.0f), gWorldViewProj);
+            vout.Color   = vin.Color;
+            vout.NormalW = vin.NormalL; // 균등 스케일이라 회전이 없으면 로컬=월드
+            vout.TexC    = vin.TexC;
             return vout;
         }
         float4 PS(VertexOut pin) : SV_Target
         {
             float4 tex = gDiffuseMap.Sample(gSampler, pin.TexC);
-            return tex * pin.Color;
+            float3 N   = normalize(pin.NormalW);
+            float ndotl = saturate(dot(N, gSunDir));
+            float3 lit  = gAmbient + gSunColor * ndotl;
+            float3 rgb  = tex.rgb * pin.Color.rgb * lit;
+            return float4(rgb, tex.a * pin.Color.a);
         }
 
         // BlendDemo::alphaTested PS: 알파가 0.1 미만인 픽셀을 버림
@@ -498,7 +520,11 @@ void Dx12Renderer::BuildShadersAndInputLayout()
         {
             float4 tex = gDiffuseMap.Sample(gSampler, pin.TexC);
             clip(tex.a - 0.1f);   // 울타리 구멍 제거
-            return tex * pin.Color;
+            float3 N   = normalize(pin.NormalW);
+            float ndotl = saturate(dot(N, gSunDir));
+            float3 lit  = gAmbient + gSunColor * ndotl;
+            float3 rgb  = tex.rgb * pin.Color.rgb * lit;
+            return float4(rgb, tex.a * pin.Color.a);
         }
     )";
 
@@ -522,14 +548,22 @@ void Dx12Renderer::BuildShadersAndInputLayout()
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
     // ── 나무 전용 셰이더 (Texture2DArray, TexC.z = 배열 슬라이스 인덱스) ──
+    // 빌보드라 정확한 노멀이 없으므로 라이팅은 (Ambient + 0.5*SunColor) 균일 톤으로 단순 모듈레이션
     const char* treeShaderSrc = R"(
         cbuffer cbPerObject : register(b0)
         {
             float4x4 gWorldViewProj;
+        };
+        cbuffer cbPass : register(b1)
+        {
+            float3 gSunDir;       float gPad0;
+            float3 gSunColor;     float gPad1;
+            float3 gAmbient;      float gPad2;
         };
         Texture2DArray gTreeMapArray : register(t0);
         SamplerState   gSampler      : register(s0);
@@ -559,7 +593,9 @@ void Dx12Renderer::BuildShadersAndInputLayout()
         {
             float4 tex = gTreeMapArray.Sample(gSampler, pin.TexC); // z = 슬라이스
             clip(tex.a - 0.1f); // 나무 윤곽 밖 픽셀 제거
-            return tex * pin.Color;
+            float3 lit = gAmbient + gSunColor * 0.5f; // 빌보드 균일 라이팅
+            float3 rgb = tex.rgb * pin.Color.rgb * lit;
+            return float4(rgb, tex.a * pin.Color.a);
         }
     )";
 
@@ -614,6 +650,8 @@ void Dx12Renderer::BuildLandGeometry()
         vertices[i].Pos.y = GetHillsHeight(p.x, p.z);
         // 풀 텍스처를 그대로 보여주려면 white 색
         vertices[i].Color = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+        // 라이팅용 노멀(언덕 표면) — BlendDemo 와 동일 공식
+        vertices[i].Normal = GetHillsNormal(p.x, p.z);
         // 텍스처 좌표는 GeometryGenerator 가 0~1 로 채워놨으니 그대로 + 반복
         vertices[i].TexC  = grid.Vertices[i].TexC;
     }
@@ -816,10 +854,11 @@ void Dx12Renderer::BuildWavesGeometry()
     const int col = mWaves->ColumnCount();
     for (int i = 0; i < mWaves->VertexCount(); ++i)
     {
-        mWavesMappedVertices[i].Pos   = mWaves->Position(i);
-        mWavesMappedVertices[i].Color = XMFLOAT4(1.0f, 1.0f, 1.0f, 0.6f); // 텍스처 그대로 + 반투명
+        mWavesMappedVertices[i].Pos    = mWaves->Position(i);
+        mWavesMappedVertices[i].Color  = XMFLOAT4(1.0f, 1.0f, 1.0f, 0.6f); // 텍스처 그대로 + 반투명
+        mWavesMappedVertices[i].Normal = XMFLOAT3(0.0f, 1.0f, 0.0f);       // 평탄 수면 노멀 (간이)
         int r = i / col, c = i % col;
-        mWavesMappedVertices[i].TexC  = XMFLOAT2((float)c / (col - 1), (float)r / (row - 1));
+        mWavesMappedVertices[i].TexC   = XMFLOAT2((float)c / (col - 1), (float)r / (row - 1));
     }
 
     geo->VertexBufferGPU = mWavesDynamicVB;
@@ -966,6 +1005,70 @@ void Dx12Renderer::BuildFrameResources()
 
     D3D12_RANGE readRange = { 0, 0 };
     mObjectCB->Map(0, &readRange, reinterpret_cast<void**>(&mObjectCBMapped));
+
+    // ── PassCB (낮/밤 라이팅용, 256-aligned 단일 블록) ──
+    mPassCBByteSize = (sizeof(PassConstants) + 255) & ~255;
+    bufDesc.Width = mPassCBByteSize;
+    device->CreateCommittedResource(&heapProp, D3D12_HEAP_FLAG_NONE,
+        &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr, IID_PPV_ARGS(&mPassCB));
+    mPassCB->Map(0, &readRange, reinterpret_cast<void**>(&mPassCBMapped));
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// UpdatePassCB
+// 낮(mDayBlend=1) ↔ 밤(mDayBlend=0) 사이를 1초 동안 부드럽게 보간하고
+// 보간 결과를 태양 색/앰비언트/하늘색에 반영해 PassCB 와 mClearColor 에 기록한다.
+// ═════════════════════════════════════════════════════════════════════
+void Dx12Renderer::UpdatePassCB(float Dt)
+{
+    // 1초 안에 목표(낮=1 / 밤=0) 도달하도록 선형 보간
+    float target = mIsNight ? 0.0f : 1.0f;
+    const float speed = 1.0f; // 단위/초 → 1초에 0↔1 전환
+    if (mDayBlend < target) mDayBlend = (std::min)(target, mDayBlend + Dt * speed);
+    else                    mDayBlend = (std::max)(target, mDayBlend - Dt * speed);
+
+    // 낮/밤 색상 (간이) — 낮: 따뜻한 햇빛 + 밝은 하늘 / 밤: 푸른 달빛 + 어두운 남색 하늘
+    XMFLOAT3 sunDay   (0.6f,  0.7f, -0.4f); // 태양으로 향하는 방향 (정규화 전)
+    XMFLOAT3 sunNight (-0.3f, 0.5f,  0.6f); // 달 방향 — 반대편에서 오기
+
+    XMFLOAT3 sunColDay  (1.00f, 0.96f, 0.85f);
+    XMFLOAT3 sunColNight(0.10f, 0.12f, 0.25f);
+
+    XMFLOAT3 ambDay   (0.35f, 0.35f, 0.40f);
+    XMFLOAT3 ambNight (0.05f, 0.05f, 0.10f);
+
+    XMFLOAT4 skyDay   (0.69f, 0.77f, 0.87f, 1.0f); // LightSteelBlue
+    XMFLOAT4 skyNight (0.02f, 0.02f, 0.07f, 1.0f); // 거의 검은 남색
+
+    auto lerp3 = [&](const XMFLOAT3& a, const XMFLOAT3& b, float t) {
+        return XMFLOAT3(a.x*(1-t)+b.x*t, a.y*(1-t)+b.y*t, a.z*(1-t)+b.z*t);
+    };
+    auto lerp4 = [&](const XMFLOAT4& a, const XMFLOAT4& b, float t) {
+        return XMFLOAT4(a.x*(1-t)+b.x*t, a.y*(1-t)+b.y*t, a.z*(1-t)+b.z*t, a.w*(1-t)+b.w*t);
+    };
+
+    // mDayBlend=1 → 낮, 0 → 밤
+    XMFLOAT3 sunDirRaw = lerp3(sunNight, sunDay,   mDayBlend);
+    XMFLOAT3 sunCol    = lerp3(sunColNight, sunColDay, mDayBlend);
+    XMFLOAT3 amb       = lerp3(ambNight, ambDay,   mDayBlend);
+    mClearColor        = lerp4(skyNight, skyDay,   mDayBlend);
+
+    // 정규화
+    XMVECTOR n = XMVector3Normalize(XMLoadFloat3(&sunDirRaw));
+    XMFLOAT3 sunDir; XMStoreFloat3(&sunDir, n);
+
+    PassConstants cb = {};
+    cb.SunDir       = sunDir;
+    cb.SunColor     = sunCol;
+    cb.AmbientColor = amb;
+    memcpy(mPassCBMapped, &cb, sizeof(PassConstants));
+}
+
+// ToggleDayNight — 버튼 핸들러에서 호출
+void Dx12Renderer::ToggleDayNight()
+{
+    mIsNight = !mIsNight;
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -1124,7 +1227,8 @@ void Dx12Renderer::PopulateCommandList()
     D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = dsvHeap->GetCPUDescriptorHandleForHeapStart();
     commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
 
-    const float clearColor[] = { 0.69f, 0.77f, 0.87f, 1.0f }; // LightSteelBlue
+    // 낮/밤 보간 결과로 매 프레임 갱신되는 하늘색
+    const float clearColor[] = { mClearColor.x, mClearColor.y, mClearColor.z, mClearColor.w };
     commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
     commandList->ClearDepthStencilView(dsvHandle,
         D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
@@ -1134,6 +1238,9 @@ void Dx12Renderer::PopulateCommandList()
     commandList->SetDescriptorHeaps(_countof(heaps), heaps);
 
     commandList->SetGraphicsRootSignature(mRootSignature.Get());
+
+    // PassCB(b1) 는 모든 드로우에서 동일하므로 한 번만 바인딩한다
+    commandList->SetGraphicsRootConstantBufferView(2, mPassCB->GetGPUVirtualAddress());
 
     // ① Opaque 레이어 (기본 PSO) — land 만
     commandList->SetPipelineState(mPSOs["opaque"].Get());

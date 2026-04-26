@@ -30,9 +30,10 @@ public:
 	afx_msg void OnRButtonDown(UINT nFlags, CPoint point);
 	afx_msg void OnRButtonUp(UINT nFlags, CPoint point);
 	afx_msg void OnMouseMove(UINT nFlags, CPoint point);
-	afx_msg void OnBtnAddTree();  // 나무 심기
-	afx_msg void OnBtnSave();     // 저장
-	afx_msg void OnBtnLoad();     // 불러오기
+	afx_msg void OnBtnAddTree();      // 나무 심기
+	afx_msg void OnBtnSave();         // 저장
+	afx_msg void OnBtnLoad();         // 불러오기
+	afx_msg void OnBtnDayNight();     // 낮/밤 전환
 	afx_msg void OnTimer(UINT_PTR nIDEvent); // 연속 렌더링 타이머
 protected:
 	virtual BOOL OnPreparePrinting(CPrintInfo* pInfo);
@@ -57,9 +58,10 @@ protected:
 
 private:
 	Dx12Renderer dx12Renderer;
-	CButton btnAddTree;  // 나무 심기
-	CButton btnSave;     // 저장
-	CButton btnLoad;     // 불러오기
+	CButton btnAddTree;   // 나무 심기
+	CButton btnSave;      // 저장
+	CButton btnLoad;      // 불러오기
+	CButton btnDayNight;  // 낮/밤 전환
 };
 
 #ifndef _DEBUG  // week5View.cpp의 디버그 버전

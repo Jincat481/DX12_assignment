@@ -88,6 +88,7 @@
 #define IDC_BTN_ADD_TREE			202
 #define IDC_BTN_SAVE				203
 #define IDC_BTN_LOAD				204
+#define IDC_BTN_TOGGLE_DAYNIGHT		205
 
 // 다음은 새 개체에 사용할 기본값입니다.
 //

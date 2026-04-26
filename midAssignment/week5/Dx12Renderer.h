@@ -20,17 +20,27 @@ using namespace Microsoft::WRL;
 using namespace DirectX;
 
 // BlendDemo 와 동일 구조의 Vertex / ObjectConstants
-// 텍스처를 사용하므로 UV 좌표를 추가
+// 텍스처 + 라이팅(낮/밤)을 위해 Normal 추가
 struct Vertex
 {
     XMFLOAT3 Pos;
     XMFLOAT4 Color;
+    XMFLOAT3 Normal;   // 람베르트 라이팅용 월드(=로컬, 균등 스케일) 노멀
     XMFLOAT2 TexC;
 };
 
 struct ObjectConstants
 {
     XMFLOAT4X4 WorldViewProj;
+};
+
+// 패스(프레임) 단위 상수 — 태양/앰비언트 색
+// HLSL 의 cbuffer 정렬을 위해 각 float3 뒤에 padding 1개씩 (총 48 byte → CB 256-align 처리)
+struct PassConstants
+{
+    XMFLOAT3 SunDir;       float pad0;   // 태양으로 향하는 방향 (정규화)
+    XMFLOAT3 SunColor;     float pad1;   // 직접광 색
+    XMFLOAT3 AmbientColor; float pad2;   // 환경광 색
 };
 
 // BlendDemo 의 SubmeshGeometry / MeshGeometry 와 동일한 역할
@@ -146,6 +156,9 @@ public:
     void SaveTrees(const CString& Filename);
     bool LoadTrees(const CString& Filename);
 
+    // 낮/밤 토글 — 1초 동안 부드럽게 보간된다
+    void ToggleDayNight();
+
 private:
     // ─── 파이프라인 ───────────────────────────────────────────
     ComPtr<ID3D12Device>              device;
@@ -189,10 +202,19 @@ private:
     RenderItem*              mTreeRitem          = nullptr;
 
     // ─── ObjectCB (BlendDemo 의 FrameResource::ObjectCB 대응) ─
-    // 메인패스 CB 는 사용하지 않는다.
     ComPtr<ID3D12Resource> mObjectCB;
     BYTE*                  mObjectCBMapped   = nullptr;
     UINT                   mObjectCBByteSize = 0;
+
+    // ─── PassCB (낮/밤 라이팅 전용) ─
+    ComPtr<ID3D12Resource> mPassCB;
+    BYTE*                  mPassCBMapped   = nullptr;
+    UINT                   mPassCBByteSize = 0;
+
+    // ─── 낮/밤 상태 ──────────────────────────────────────────
+    bool   mIsNight  = false; // false=낮 / true=밤
+    float  mDayBlend = 1.0f;  // 1=낮, 0=밤 (목표값으로 dt 마다 보간)
+    XMFLOAT4 mClearColor = { 0.69f, 0.77f, 0.87f, 1.0f }; // 매 프레임 갱신
 
     // ─── 동기화 ──────────────────────────────────────────
     ComPtr<ID3D12Fence> fence;
@@ -238,6 +260,7 @@ private:
     void UpdateCamera();
     void UpdateObjectCBs();
     void UpdateWaves(float Dt);
+    void UpdatePassCB(float Dt);     // 낮/밤 보간 + PassConstants 기록
     void CalculateFrameStats(); // BlendDemo::CalculateFrameStats 와 동일
 
     // ─── Build* (BlendDemo 호출 순서 동일) ─────────────────
