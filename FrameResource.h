@@ -14,6 +14,12 @@ struct ObjectConstants
 	UINT     ObjPad2;
 };
 
+struct SkinnedConstants
+{
+	// FBX 모델은 96개보다 많은 본을 가진 경우가 있어서 셰이더와 같은 256개로 맞춘다.
+	DirectX::XMFLOAT4X4 BoneTransforms[256];
+};
+
 struct PassConstants
 {
     DirectX::XMFLOAT4X4 View = MathHelper::Identity4x4();
@@ -62,13 +68,24 @@ struct Vertex
 	DirectX::XMFLOAT2 TexC;
 };
 
+struct SkinnedVertex
+{
+	// FBX 스키닝 모델용 정점 구조체이다. HLSL의 SKINNED 입력 레이아웃과 순서/오프셋을 맞춘다.
+	DirectX::XMFLOAT3 Pos;
+	DirectX::XMFLOAT3 Normal;
+	DirectX::XMFLOAT2 TexC;
+	DirectX::XMFLOAT3 TangentU;
+	DirectX::XMFLOAT3 BoneWeights;
+	BYTE BoneIndices[4];
+};
+
 // Stores the resources needed for the CPU to build the command lists
 // for a frame.  
 struct FrameResource
 {
 public:
     
-    FrameResource(ID3D12Device* device, UINT passCount, UINT objectCount, UINT materialCount);
+    FrameResource(ID3D12Device* device, UINT passCount, UINT objectCount, UINT skinnedObjectCount, UINT materialCount);
     FrameResource(const FrameResource& rhs) = delete;
     FrameResource& operator=(const FrameResource& rhs) = delete;
     ~FrameResource();
@@ -81,6 +98,8 @@ public:
     // that reference it.  So each frame needs their own cbuffers.
     std::unique_ptr<UploadBuffer<PassConstants>> PassCB = nullptr;
     std::unique_ptr<UploadBuffer<ObjectConstants>> ObjectCB = nullptr;
+	// skinned object마다 매 프레임 계산한 최종 bone transform을 GPU로 넘긴다.
+	std::unique_ptr<UploadBuffer<SkinnedConstants>> SkinnedCB = nullptr;
 
 	std::unique_ptr<UploadBuffer<MaterialData>> MaterialBuffer = nullptr;
 

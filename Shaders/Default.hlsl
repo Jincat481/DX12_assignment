@@ -33,7 +33,9 @@ struct MaterialData
 
 // An array of textures, which is only supported in shader model 5.1+.  Unlike Texture2DArray, the textures
 // in this array can be different sizes and formats, making it more flexible than texture arrays.
-Texture2D gDiffuseMap[4] : register(t0);
+// C++의 gNumTextureDescriptors와 같은 값이어야 PSO 생성 시 root signature 검증을 통과한다.
+// C++의 gNumTextureDescriptors와 같은 값이어야 root signature와 PSO 검증이 통과한다.
+Texture2D gDiffuseMap[64] : register(t0);
 
 // Put in space1, so the texture array does not overlap with these resources.  
 // The texture array will occupy registers t0, t1, ..., t3 in space0. 
@@ -84,11 +86,23 @@ cbuffer cbPass : register(b1)
     Light gLights[MaxLights];
 };
 
+cbuffer cbSkinned : register(b2)
+{
+    // C++의 SkinnedConstants::BoneTransforms와 같은 개수로 맞춘다.
+    float4x4 gBoneTransforms[256];
+};
+
 struct VertexIn
 {
 	float3 PosL    : POSITION;
     float3 NormalL : NORMAL;
 	float2 TexC    : TEXCOORD;
+#ifdef SKINNED
+	// SKINNED 매크로가 켜진 PSO에서만 FBX bone weight/index 입력을 받는다.
+	float3 TangentL : TANGENT;
+	float3 BoneWeights : WEIGHTS;
+	uint4 BoneIndices  : BONEINDICES;
+#endif
 };
 
 struct VertexOut
@@ -105,6 +119,28 @@ VertexOut VS(VertexIn vin)
 
 	// Fetch the material data.
 	MaterialData matData = gMaterialData[gMaterialIndex];
+
+#ifdef SKINNED
+	// 네 번째 weight는 저장하지 않고 앞의 세 weight에서 복원해서 vertex 크기를 줄인다.
+	float weights[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	weights[0] = vin.BoneWeights.x;
+	weights[1] = vin.BoneWeights.y;
+	weights[2] = vin.BoneWeights.z;
+	weights[3] = 1.0f - weights[0] - weights[1] - weights[2];
+
+	float3 posL = float3(0.0f, 0.0f, 0.0f);
+	float3 normalL = float3(0.0f, 0.0f, 0.0f);
+
+	// vertex가 참조하는 최대 4개 bone transform을 가중합해서 현재 animation 자세를 만든다.
+	for(int i = 0; i < 4; ++i)
+	{
+		posL += weights[i] * mul(float4(vin.PosL, 1.0f), gBoneTransforms[vin.BoneIndices[i]]).xyz;
+		normalL += weights[i] * mul(vin.NormalL, (float3x3)gBoneTransforms[vin.BoneIndices[i]]);
+	}
+
+	vin.PosL = posL;
+	vin.NormalL = normalL;
+#endif
 	
     // Transform to world space.
     float4 posW = mul(float4(vin.PosL, 1.0f), gWorld);
